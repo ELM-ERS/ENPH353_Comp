@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>844</width>
+    <width>831</width>
     <height>738</height>
    </rect>
   </property>
@@ -17,8 +17,8 @@
    <widget class="QPushButton" name="recording_button">
     <property name="geometry">
      <rect>
-      <x>460</x>
-      <y>310</y>
+      <x>440</x>
+      <y>370</y>
       <width>111</width>
       <height>21</height>
      </rect>
@@ -33,10 +33,10 @@
     </property>
     <property name="geometry">
      <rect>
-      <x>440</x>
+      <x>420</x>
       <y>20</y>
-      <width>320</width>
-      <height>240</height>
+      <width>400</width>
+      <height>261</height>
      </rect>
     </property>
     <property name="minimumSize">
@@ -58,7 +58,7 @@
    <widget class="QLabel" name="live_image_label">
     <property name="geometry">
      <rect>
-      <x>10</x>
+      <x>0</x>
       <y>20</y>
       <width>400</width>
       <height>400</height>
@@ -71,8 +71,8 @@
    <widget class="QPushButton" name="save_images_button">
     <property name="geometry">
      <rect>
-      <x>540</x>
-      <y>340</y>
+      <x>520</x>
+      <y>400</y>
       <width>111</width>
       <height>21</height>
      </rect>
@@ -84,8 +84,8 @@
    <widget class="QPushButton" name="pause_button">
     <property name="geometry">
      <rect>
-      <x>640</x>
-      <y>310</y>
+      <x>620</x>
+      <y>370</y>
       <width>61</width>
       <height>21</height>
      </rect>
@@ -94,13 +94,71 @@
      <string>&amp;Pause</string>
     </property>
    </widget>
+   <widget class="QLabel" name="clue_type_display_label">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>430</y>
+      <width>81</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Clue Type:</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="clue_type_label">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>430</y>
+      <width>251</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
+   <widget class="QLabel" name="clue_display_label">
+    <property name="geometry">
+     <rect>
+      <x>20</x>
+      <y>460</y>
+      <width>81</width>
+      <height>20</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>Clue:</string>
+    </property>
+    <property name="alignment">
+     <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+    </property>
+   </widget>
+   <widget class="QLabel" name="clue_label">
+    <property name="geometry">
+     <rect>
+      <x>110</x>
+      <y>460</y>
+      <width>251</width>
+      <height>21</height>
+     </rect>
+    </property>
+    <property name="text">
+     <string>TextLabel</string>
+    </property>
+   </widget>
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry">
     <rect>
      <x>0</x>
      <y>0</y>
-     <width>844</width>
+     <width>831</width>
      <height>20</height>
     </rect>
    </property>
