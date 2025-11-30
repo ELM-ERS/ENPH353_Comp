@@ -28,7 +28,7 @@ os.makedirs(OUT_LABELS_DIR, exist_ok=True)
 os.makedirs(OUT_SIGN_IMAGES_DIR, exist_ok=True)
 os.makedirs(OUT_SIGN_LABELS_DIR, exist_ok=True)
 
-AUG_PER_IMAGE = 4
+AUG_PER_IMAGE = 1
 
 # camera resolution
 OUT_W = 1400
@@ -40,8 +40,10 @@ RESIZE_DIM = 680
 ANGLE_RANGE_DEG = (-5.0, 5.0)
 SCALE_RANGE = (0.2, 2.2)
 
-NO_OBJECT_FRACTION=0.2
-SHEAR_RANGE_DEG=(-20,20)
+NO_OBJECT_FRACTION = 0.2
+SHEAR_RANGE_DEG = (-2, 2)
+MAX_PERSP_SHRINK = 0.16
+MAX_PERSP_TILT = 0.2
 
 # must match your generator
 SIGN_CLASS_ID = 36
@@ -97,19 +99,21 @@ def corners_to_yolo(cls_id, x0, y0, x1, y1, img_w, img_h):
         bh / img_h,
     )
 
+
 def random_affine_matrix(src_w, src_h, dst_w, dst_h):
     """
     Affine that:
     - rotates in ANGLE_RANGE_DEG
     - scales in SCALE_RANGE but clamped so rotated sign fits inside dst
-    - applies shear in SHEAR_RANGE_DEG
+    - applies vertical shear (y' = y + k*x) in SHEAR_RANGE_DEG
+      to mimic viewing the sign from left/right
     - places sign fully inside dst
     """
     # rotation
     angle_deg = random.uniform(*ANGLE_RANGE_DEG)
     angle_rad = math.radians(angle_deg)
 
-    # shear
+    # vertical shear to simulate left/right viewpoint
     shear_deg = random.uniform(*SHEAR_RANGE_DEG)
     shear_rad = math.radians(shear_deg)
 
@@ -122,7 +126,7 @@ def random_affine_matrix(src_w, src_h, dst_w, dst_h):
     w2 = src_w / 2.0
     h2 = src_h / 2.0
 
-    # account for rotation with no shear (shear doesn't change bounding extents much)
+    # Approximate extents using rotation only (shear is small)
     denom_w = 2.0 * (cos_a * w2 + sin_a * h2)
     denom_h = 2.0 * (sin_a * w2 + cos_a * h2)
     s_limit_w = dst_w / denom_w
@@ -134,10 +138,11 @@ def random_affine_matrix(src_w, src_h, dst_w, dst_h):
 
     scale = min(base_scale, s_max_angle)
 
-    # random center inside dst
+    # extents after rotation+scale (still an approximation)
     half_w = scale * (cos_a * w2 + sin_a * h2)
     half_h = scale * (sin_a * w2 + cos_a * h2)
 
+    # choose random center so whole sign stays in frame
     cx_min = half_w
     cx_max = dst_w - half_w
     cy_min = half_h
@@ -151,34 +156,192 @@ def random_affine_matrix(src_w, src_h, dst_w, dst_h):
     center_x = random.uniform(cx_min, cx_max)
     center_y = random.uniform(cy_min, cy_max)
 
-    # --- build full affine matrix manually (rotation + scale + shear) ---
+    # --- build full affine matrix (scale+rotation + vertical shear) ---
     M = np.eye(3, dtype=np.float32)
 
-    # scale + rotation
-    rot = np.array([
-        [ math.cos(angle_rad), -math.sin(angle_rad)],
-        [ math.sin(angle_rad),  math.cos(angle_rad)]
-    ], dtype=np.float32) * scale
+    # rotation + scale
+    rot = (
+        np.array(
+            [
+                [math.cos(angle_rad), -math.sin(angle_rad)],
+                [math.sin(angle_rad), math.cos(angle_rad)],
+            ],
+            dtype=np.float32,
+        )
+        * scale
+    )
 
-    # shear in x direction
-    shear = np.array([
-        [1, math.tan(shear_rad)],
-        [0, 1]
-    ], dtype=np.float32)
+    # vertical shear: y' = y + tan(shear)*x
+    shear = np.array(
+        [
+            [1.0, 0.0],
+            [math.tan(shear_rad), 1.0],
+        ],
+        dtype=np.float32,
+    )
 
-    A = rot @ shear   # combine ops
+    # apply rotation first, then shear (you can swap if you prefer the feel)
+    A = shear @ rot
     M[:2, :2] = A
 
-    # translate so source center maps to desired random center
-    src_center = np.array([src_w / 2.0, src_h / 2.0, 1], dtype=np.float32)
+    # translate so source center maps to (center_x, center_y)
+    src_center = np.array([src_w / 2.0, src_h / 2.0, 1.0], dtype=np.float32)
     current_center = M @ src_center
     dx = center_x - current_center[0]
     dy = center_y - current_center[1]
     M[0, 2] = dx
     M[1, 2] = dy
 
+    # cv2.warpAffine expects 2x3
     return M[:2, :]
 
+
+def random_perspective_matrix(
+    src_w,
+    src_h,
+    dst_w,
+    dst_h,
+    max_persp_shrink=MAX_PERSP_SHRINK,
+    max_persp_tilt=MAX_PERSP_TILT,
+):
+    """
+    Build a 3x3 homography that:
+      - scales the source banner
+      - places it somewhere in the dst canvas
+      - applies a left/right "yaw" perspective so one vertical edge
+        is closer (near) and the opposite is farther (shrunk & tilted).
+
+    max_persp_shrink: max fraction of width to shrink the far side (0..1)
+    max_persp_tilt:   max fraction of height to vertically tilt the far side (0..1)
+    """
+    margin = 0.05 * min(dst_w, dst_h)  # keep a small border
+
+    # choose a scale that fits inside the destination
+    s_min, s_max = SCALE_RANGE
+    s_max_fit = min(
+        s_max,
+        (dst_w - 2 * margin) / src_w,
+        (dst_h - 2 * margin) / src_h,
+    )
+    if s_max_fit <= s_min:
+        s_max_fit = s_min
+
+    scale = random.uniform(s_min, s_max_fit)
+    W = src_w * scale
+    H = src_h * scale
+
+    # random center where whole (non-perspective) rect would fit
+    cx_min = margin + W / 2.0
+    cx_max = dst_w - margin - W / 2.0
+    cy_min = margin + H / 2.0
+    cy_max = dst_h - margin - H / 2.0
+
+    if cx_max < cx_min:
+        cx_min = cx_max = dst_w / 2.0
+    if cy_max < cy_min:
+        cy_min = cy_max = dst_h / 2.0
+
+    cx = random.uniform(cx_min, cx_max)
+    cy = random.uniform(cy_min, cy_max)
+
+    # base rectangle (no perspective) in dst coords
+    left_x = cx - W / 2.0
+    right_x = cx + W / 2.0
+    top_y = cy - H / 2.0
+    bot_y = cy + H / 2.0
+
+    # choose which side is nearer to the camera
+    near_left = random.choice([True, False])
+
+    # random shrink and tilt for the far side
+    shrink_frac = random.uniform(0.0, max_persp_shrink)  # 0–60% of width
+    tilt_frac = random.uniform(-max_persp_tilt, max_persp_tilt)  # ±40% of height
+
+    # compute dst quadrilateral
+    if near_left:
+        # left side is near (unchanged), right side is far (shrunk & tilted)
+        tl = (left_x, top_y)
+        bl = (left_x, bot_y)
+
+        far_x = right_x - shrink_frac * W
+        tl_far_y = top_y + tilt_frac * H
+        bl_far_y = bot_y - tilt_frac * H
+
+        tr = (far_x, tl_far_y)
+        br = (far_x, bl_far_y)
+    else:
+        # right side is near, left side is far
+        tr = (right_x, top_y)
+        br = (right_x, bot_y)
+
+        far_x = left_x + shrink_frac * W
+        tl_far_y = top_y + tilt_frac * H
+        bl_far_y = bot_y - tilt_frac * H
+
+        tl = (far_x, tl_far_y)
+        bl = (far_x, bl_far_y)
+
+    src_pts = np.float32(
+        [
+            [0, 0],
+            [src_w, 0],
+            [src_w, src_h],
+            [0, src_h],
+        ]
+    )
+    dst_pts = np.float32([tl, tr, br, bl])
+
+    H_mat = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    return H_mat
+
+
+def apply_perspective_to_points(points, H):
+    """
+    points: list/array of (x, y) in source coords
+    H: 3x3 homography
+    returns Nx2 array of transformed points in dst coords
+    """
+    pts = np.array(points, dtype=np.float32)
+    ones = np.ones((pts.shape[0], 1), dtype=np.float32)
+    pts_h = np.concatenate([pts, ones], axis=1)  # (N,3)
+    pts_t = pts_h @ H.T  # (N,3)
+    xs = pts_t[:, 0] / pts_t[:, 2]
+    ys = pts_t[:, 1] / pts_t[:, 2]
+    return np.stack([xs, ys], axis=1)
+
+
+def transform_boxes_yolo_perspective(boxes, H, src_w, src_h, dst_w, dst_h):
+    """
+    Apply a perspective homography to YOLO-normalized boxes.
+    Returns new YOLO-normalized boxes in dst size.
+    """
+    new_boxes = []
+    for box in boxes:
+        cls_id, x0, y0, x1, y1 = yolo_to_corners(box, src_w, src_h)
+
+        corners = [
+            (x0, y0),
+            (x1, y0),
+            (x1, y1),
+            (x0, y1),
+        ]
+        corners_t = apply_perspective_to_points(corners, H)
+
+        xs = corners_t[:, 0]
+        ys = corners_t[:, 1]
+
+        x_min = max(0.0, float(xs.min()))
+        y_min = max(0.0, float(ys.min()))
+        x_max = min(dst_w - 1.0, float(xs.max()))
+        y_max = min(dst_h - 1.0, float(ys.max()))
+
+        if x_max <= x_min or y_max <= y_min:
+            continue
+
+        new_boxes.append(
+            corners_to_yolo(cls_id, x_min, y_min, x_max, y_max, dst_w, dst_h)
+        )
+    return new_boxes
 
 
 def apply_affine_to_points(points, M):
@@ -312,7 +475,6 @@ def process_image(img_path):
     crop_count = 0
 
     for k in range(AUG_PER_IMAGE):
-
         # -------------------------------------------------------
         # No-object images (noise only) with empty label file
         # -------------------------------------------------------
@@ -325,7 +487,7 @@ def process_image(img_path):
 
             cv2.imwrite(
                 os.path.join(OUT_IMAGES_DIR, out_img_name),
-                cv2.resize(bg, (RESIZE_DIM, RESIZE_DIM))
+                cv2.resize(bg, (RESIZE_DIM, RESIZE_DIM)),
             )
 
             # create empty label file
@@ -334,16 +496,35 @@ def process_image(img_path):
             # no crops for empty samples
             continue
 
-        
         # noise background
         bg = np.random.randint(0, 256, (dst_h, dst_w, 3), dtype=np.uint8)
 
-        # affine in source coords
-        M = random_affine_matrix(src_w, src_h, dst_w, dst_h)
+        # # affine in source coords
+        # M = random_affine_matrix(src_w, src_h, dst_w, dst_h)
 
-        warped = cv2.warpAffine(
+        # warped = cv2.warpAffine(
+        #     img,
+        #     M,
+        #     (dst_w, dst_h),
+        #     flags=cv2.INTER_LINEAR,
+        #     borderMode=cv2.BORDER_CONSTANT,
+        #     borderValue=(0, 0, 0),
+        # )
+
+        # gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        # mask = gray > 0
+        # bg[mask] = warped[mask]
+
+        # new_boxes = transform_boxes_yolo(orig_boxes, M, src_w, src_h, dst_w, dst_h)
+        # if not new_boxes:
+        #     continue
+
+        # perspective in source coords
+        H = random_perspective_matrix(src_w, src_h, dst_w, dst_h)
+
+        warped = cv2.warpPerspective(
             img,
-            M,
+            H,
             (dst_w, dst_h),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
@@ -354,9 +535,9 @@ def process_image(img_path):
         mask = gray > 0
         bg[mask] = warped[mask]
 
-        new_boxes = transform_boxes_yolo(orig_boxes, M, src_w, src_h, dst_w, dst_h)
-        if not new_boxes:
-            continue
+        new_boxes = transform_boxes_yolo_perspective(
+            orig_boxes, H, src_w, src_h, dst_w, dst_h
+        )
 
         # save full 1400x1400
         out_img_name = f"{base_name}_aug{k}.png"

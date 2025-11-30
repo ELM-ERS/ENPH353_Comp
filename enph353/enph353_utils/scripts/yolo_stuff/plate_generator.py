@@ -12,7 +12,7 @@ from PIL import Image, ImageFont, ImageDraw
 # Config
 # ---------------------------------------------------------------------------
 
-NUM_IMAGES = 10000  # number of random samples
+NUM_IMAGES = 100  # number of random samples
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__)) + "/"
 BANNER_TEMPLATE = os.path.join(SCRIPT_PATH, "clue_banner.png")
@@ -38,7 +38,7 @@ VALUE_LEN_RANGE = (3, 12)
 
 # how much of the character cell to trim off the top of each box
 TOP_TRIM_FRACTION = 0.17  # ~12% of char height; tweak if you like
-BOTTOM_TRIM_FRACTION = 0.25  # ~12% of char height; tweak if you like
+BOTTOM_TRIM_FRACTION = 0.1  # ~12% of char height; tweak if you like
 
 # Character classes
 CLASS_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # 36 classes
@@ -64,7 +64,9 @@ def measure_char(font):
     """
     dummy = Image.new("L", (256, 256))
     d = ImageDraw.Draw(dummy)
-    w, h = d.textsize("A", font=font)  # "A" as representative character
+    # w, h = d.textsize("A", font=font)  # "A" as representative character
+    w = d.textlength("A", font=font)  # "A" as representative character
+    h = FONT_SIZE
     return w, h
 
 
