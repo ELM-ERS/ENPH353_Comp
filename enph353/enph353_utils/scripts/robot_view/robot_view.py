@@ -1,7 +1,7 @@
 import roslib
 import rospy
 import sys
-import numpy as np
+import numpy
 import cv2
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
@@ -12,6 +12,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from python_qt_binding import loadUi
 
 from ultralytics import YOLO
+from ultralytics.nn.tasks import DetectionModel
 import torch
 
 
@@ -20,10 +21,12 @@ class RobotViewApp(QtWidgets.QMainWindow):
         super(RobotViewApp, self).__init__()
         loadUi("./robot_view.ui", self)
 
-        self.yolo_model = YOLO("./main_sign_model.pt")
-        # self.yolo_model = YOLO("yolo12m.pt")
-        # sd = torch.load("./main_sign_model.pt", map_location="cpu")
-        # self.yolo_model.model.load_state_dict(sd, strict=True)
+        # self.yolo_model = YOLO("./main_sign_model.pt")
+        self.yolo_model = YOLO("./main_sign_model.torchscript")
+
+        # self.yolo_model = DetectionModel("yolo12m.yaml")
+        # ckpt = torch.load("./main_sign_model.pt", map_location="cuda")
+        # self.yolo_model.load_state_dict(ckpt["model"])
 
         self.bridge = CvBridge()
 

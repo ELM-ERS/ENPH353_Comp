@@ -28,8 +28,8 @@ FONT_SIZE = 90
 FONT_COLOR = (255, 0, 0)  # BGR in OpenCV; we'll reverse for PIL (RGB)
 
 # Positions for the two lines (same as your original script)
-KEY_ORIGIN = (250, 30)  # x, y for top line
-VALUE_ORIGIN = (30, 250)  # x, y for bottom line
+KEY_ORIGIN = (250, 30)  # x, y for top line (in inner banner coords)
+VALUE_ORIGIN = (30, 250)  # x, y for bottom line (in inner banner coords)
 
 # Random text config
 CHARSET = "0123456789" + string.ascii_uppercase  # 0–9 + A–Z
@@ -37,15 +37,22 @@ KEY_LEN_RANGE = (3, 7)
 VALUE_LEN_RANGE = (3, 12)
 
 # how much of the character cell to trim off the top of each box
-TOP_TRIM_FRACTION = 0.17  # ~12% of char height; tweak if you like
-BOTTOM_TRIM_FRACTION = 0.1  # ~12% of char height; tweak if you like
+TOP_TRIM_FRACTION = 0.17
+BOTTOM_TRIM_FRACTION = 0.10
 
 # Character classes
 CLASS_ORDER = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # 36 classes
 CHAR_TO_ID = {ch: i for i, ch in enumerate(CLASS_ORDER)}
 
-# Extra class for the whole sign
+# Extra class for the whole sign (inner white area only)
 SIGN_CLASS_ID = len(CLASS_ORDER)  # class 36
+
+# Blue outer background (BGR)
+BLUE_BG_COLOR = (255, 0, 0)  # bright blue in BGR
+
+# Separate border widths
+TOP_BOTTOM_BORDER_PX = 35  # top & bottom border thickness
+LEFT_RIGHT_BORDER_PX = 90  # left & right border thickness
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,28 +65,17 @@ def random_text(min_len, max_len):
 
 
 def measure_char(font):
-    """
-    Measure a single monospaced character using ImageDraw.textsize,
-    which matches how text is actually rendered.
-    """
     dummy = Image.new("L", (256, 256))
     d = ImageDraw.Draw(dummy)
-    # w, h = d.textsize("A", font=font)  # "A" as representative character
     w = d.textlength("A", font=font)  # "A" as representative character
     h = FONT_SIZE
     return w, h
 
 
 def add_line_boxes(text, origin, img_w, img_h, char_w, char_h):
-    """
-    Compute YOLO boxes (one per character) for a monospaced text line.
-    Returns list of (class_id, cx_norm, cy_norm, w_norm, h_norm).
-    """
     x0_origin, y0_origin = origin
     labels = []
 
-    # we keep the bottom of the box at y0_origin + char_h
-    # and move the top down a bit
     top_offset = int(TOP_TRIM_FRACTION * char_h)
     bottom_offset = int(BOTTOM_TRIM_FRACTION * char_h)
 
@@ -88,9 +84,9 @@ def add_line_boxes(text, origin, img_w, img_h, char_w, char_h):
             continue
 
         x0 = x0_origin + i * char_w
-        y0 = y0_origin + top_offset  # shifted down
+        y0 = y0_origin + top_offset
         x1 = x0 + char_w
-        y1 = y0_origin + char_h + bottom_offset  # same as before -> bottom unchanged
+        y1 = y0_origin + char_h + bottom_offset
 
         cx = (x0 + x1) / 2.0
         cy = (y0 + y1) / 2.0
@@ -118,7 +114,8 @@ def main():
     if banner is None:
         raise RuntimeError(f"Could not load template image at {BANNER_TEMPLATE}")
 
-    img_h, img_w = banner.shape[:2]
+    # original clue_banner size (inner white/grey panel with logo)
+    inner_h, inner_w = banner.shape[:2]
 
     pil_font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
     char_w, char_h = measure_char(pil_font)
@@ -126,42 +123,98 @@ def main():
     for i in range(NUM_IMAGES):
         base = banner.copy()
 
-        # Convert to PIL (OpenCV BGR -> PIL RGB)
+        # Draw text on the INNER banner (no blue yet)
         base_rgb = cv2.cvtColor(base, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(base_rgb)
         draw = ImageDraw.Draw(pil_img)
 
-        # Generate random strings
         key_text = random_text(*KEY_LEN_RANGE)
         value_text = random_text(*VALUE_LEN_RANGE)
 
-        # Draw text (FONT_COLOR reversed to RGB)
         draw.text(KEY_ORIGIN, key_text, fill=FONT_COLOR[::-1], font=pil_font)
         draw.text(VALUE_ORIGIN, value_text, fill=FONT_COLOR[::-1], font=pil_font)
 
-        # Character-level labels
-        labels = []
-        labels += add_line_boxes(key_text, KEY_ORIGIN, img_w, img_h, char_w, char_h)
-        labels += add_line_boxes(value_text, VALUE_ORIGIN, img_w, img_h, char_w, char_h)
-
-        # Whole-sign label (covers the full image)
-        labels.append(
-            (
-                SIGN_CLASS_ID,
-                0.5,  # cx
-                0.5,  # cy
-                1.0,  # w
-                1.0,  # h
-            )
+        # Character-level boxes in inner-banner coordinates
+        inner_char_labels = []
+        inner_char_labels += add_line_boxes(
+            key_text, KEY_ORIGIN, inner_w, inner_h, char_w, char_h
+        )
+        inner_char_labels += add_line_boxes(
+            value_text, VALUE_ORIGIN, inner_w, inner_h, char_w, char_h
         )
 
         # Convert back to OpenCV BGR
-        final_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        inner_img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+        # -------------------------------------------------------
+        # Add blue background/border around the inner banner
+        # -------------------------------------------------------
+        pad_y = TOP_BOTTOM_BORDER_PX
+        pad_x = LEFT_RIGHT_BORDER_PX
+
+        out_h = inner_h + 2 * pad_y
+        out_w = inner_w + 2 * pad_x
+
+        blue_bg = np.full((out_h, out_w, 3), BLUE_BG_COLOR, dtype=np.uint8)
+        blue_bg[pad_y : pad_y + inner_h, pad_x : pad_x + inner_w] = inner_img
+
+        # -------------------------------------------------------
+        # Adjust character boxes for padding and new size
+        # -------------------------------------------------------
+        labels = []
+        for cls_id, cx, cy, w, h in inner_char_labels:
+            # original inner pixel corners
+            x0_inner = (cx - w / 2.0) * inner_w
+            y0_inner = (cy - h / 2.0) * inner_h
+            x1_inner = (cx + w / 2.0) * inner_w
+            y1_inner = (cy + h / 2.0) * inner_h
+
+            # shift by padding into outer coords
+            x0 = x0_inner + pad_x
+            y0 = y0_inner + pad_y
+            x1 = x1_inner + pad_x
+            y1 = y1_inner + pad_y
+
+            bw = x1 - x0
+            bh = y1 - y0
+
+            cx_new = (x0 + x1) / 2.0 / out_w
+            cy_new = (y0 + y1) / 2.0 / out_h
+            w_new = bw / out_w
+            h_new = bh / out_h
+
+            labels.append((cls_id, cx_new, cy_new, w_new, h_new))
+
+        # -------------------------------------------------------
+        # Whole-sign box: ONLY the inner white area
+        # -------------------------------------------------------
+        sign_x0 = pad_x
+        sign_y0 = pad_y
+        sign_x1 = pad_x + inner_w
+        sign_y1 = pad_y + inner_h
+
+        sign_w = sign_x1 - sign_x0
+        sign_h = sign_y1 - sign_y0
+
+        sign_cx = (sign_x0 + sign_x1) / 2.0 / out_w
+        sign_cy = (sign_y0 + sign_y1) / 2.0 / out_h
+        sign_w_norm = sign_w / out_w
+        sign_h_norm = sign_h / out_h
+
+        labels.append(
+            (
+                SIGN_CLASS_ID,
+                sign_cx,
+                sign_cy,
+                sign_w_norm,
+                sign_h_norm,
+            )
+        )
 
         # Save image
         img_name = f"plate_{i}.png"
         img_path = os.path.join(IMAGES_DIR, img_name)
-        cv2.imwrite(img_path, final_img)
+        cv2.imwrite(img_path, blue_bg)
 
         # Save YOLO labels
         label_name = f"plate_{i}.txt"
