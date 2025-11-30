@@ -28,7 +28,7 @@ os.makedirs(OUT_LABELS_DIR, exist_ok=True)
 os.makedirs(OUT_SIGN_IMAGES_DIR, exist_ok=True)
 os.makedirs(OUT_SIGN_LABELS_DIR, exist_ok=True)
 
-AUG_PER_IMAGE = 2
+AUG_PER_IMAGE = 4
 
 # camera resolution
 OUT_W = 1400
@@ -40,11 +40,14 @@ RESIZE_DIM = 680
 ANGLE_RANGE_DEG = (-5.0, 5.0)
 SCALE_RANGE = (0.2, 2.2)
 
+NO_OBJECT_FRACTION=0.2
+SHEAR_RANGE_DEG=(-20,20)
+
 # must match your generator
 SIGN_CLASS_ID = 36
 
 # how many processes to use
-NUM_WORKERS = 16  # or: os.cpu_count()
+NUM_WORKERS = 20  # or: os.cpu_count()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -94,24 +97,32 @@ def corners_to_yolo(cls_id, x0, y0, x1, y1, img_w, img_h):
         bh / img_h,
     )
 
-
 def random_affine_matrix(src_w, src_h, dst_w, dst_h):
     """
     Affine that:
-    - rotates by random angle in ANGLE_RANGE_DEG
+    - rotates in ANGLE_RANGE_DEG
     - scales in SCALE_RANGE but clamped so rotated sign fits inside dst
-    - places sign at random position inside dst
+    - applies shear in SHEAR_RANGE_DEG
+    - places sign fully inside dst
     """
+    # rotation
     angle_deg = random.uniform(*ANGLE_RANGE_DEG)
     angle_rad = math.radians(angle_deg)
+
+    # shear
+    shear_deg = random.uniform(*SHEAR_RANGE_DEG)
+    shear_rad = math.radians(shear_deg)
+
     cos_a = abs(math.cos(angle_rad))
     sin_a = abs(math.sin(angle_rad))
 
+    # base scale
     base_scale = random.uniform(*SCALE_RANGE)
 
     w2 = src_w / 2.0
     h2 = src_h / 2.0
 
+    # account for rotation with no shear (shear doesn't change bounding extents much)
     denom_w = 2.0 * (cos_a * w2 + sin_a * h2)
     denom_h = 2.0 * (sin_a * w2 + cos_a * h2)
     s_limit_w = dst_w / denom_w
@@ -123,6 +134,7 @@ def random_affine_matrix(src_w, src_h, dst_w, dst_h):
 
     scale = min(base_scale, s_max_angle)
 
+    # random center inside dst
     half_w = scale * (cos_a * w2 + sin_a * h2)
     half_h = scale * (sin_a * w2 + cos_a * h2)
 
@@ -139,17 +151,34 @@ def random_affine_matrix(src_w, src_h, dst_w, dst_h):
     center_x = random.uniform(cx_min, cx_max)
     center_y = random.uniform(cy_min, cy_max)
 
-    src_center = (src_w / 2.0, src_h / 2.0)
-    M = cv2.getRotationMatrix2D(src_center, angle_deg, scale)
+    # --- build full affine matrix manually (rotation + scale + shear) ---
+    M = np.eye(3, dtype=np.float32)
 
-    src_center_h = np.array([src_center[0], src_center[1], 1.0], dtype=np.float32)
-    cur_center = M @ src_center_h
-    dx = center_x - cur_center[0]
-    dy = center_y - cur_center[1]
-    M[0, 2] += dx
-    M[1, 2] += dy
+    # scale + rotation
+    rot = np.array([
+        [ math.cos(angle_rad), -math.sin(angle_rad)],
+        [ math.sin(angle_rad),  math.cos(angle_rad)]
+    ], dtype=np.float32) * scale
 
-    return M
+    # shear in x direction
+    shear = np.array([
+        [1, math.tan(shear_rad)],
+        [0, 1]
+    ], dtype=np.float32)
+
+    A = rot @ shear   # combine ops
+    M[:2, :2] = A
+
+    # translate so source center maps to desired random center
+    src_center = np.array([src_w / 2.0, src_h / 2.0, 1], dtype=np.float32)
+    current_center = M @ src_center
+    dx = center_x - current_center[0]
+    dy = center_y - current_center[1]
+    M[0, 2] = dx
+    M[1, 2] = dy
+
+    return M[:2, :]
+
 
 
 def apply_affine_to_points(points, M):
@@ -283,6 +312,29 @@ def process_image(img_path):
     crop_count = 0
 
     for k in range(AUG_PER_IMAGE):
+
+        # -------------------------------------------------------
+        # No-object images (noise only) with empty label file
+        # -------------------------------------------------------
+        if random.random() < NO_OBJECT_FRACTION:
+            # create random noise background
+            bg = np.random.randint(0, 256, (dst_h, dst_w, 3), dtype=np.uint8)
+
+            out_img_name = f"{base_name}_aug{k}_empty.png"
+            out_lbl_name = f"{base_name}_aug{k}_empty.txt"
+
+            cv2.imwrite(
+                os.path.join(OUT_IMAGES_DIR, out_img_name),
+                cv2.resize(bg, (RESIZE_DIM, RESIZE_DIM))
+            )
+
+            # create empty label file
+            open(os.path.join(OUT_LABELS_DIR, out_lbl_name), "w").close()
+
+            # no crops for empty samples
+            continue
+
+        
         # noise background
         bg = np.random.randint(0, 256, (dst_h, dst_w, 3), dtype=np.uint8)
 

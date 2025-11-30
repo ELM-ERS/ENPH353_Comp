@@ -13,11 +13,15 @@ IMAGES_DIR = os.path.join(ROOT, "images")  # or your one folder
 LABELS_DIR = os.path.join(ROOT, "labels")  # required
 
 TRAIN_SPLIT = 0.9  # 90% train, 10% val
-
+DATA_FRACTION = 0.005 # How much of the data to actually use (dataset is massive lmao)
 
 def build_split_lists():
     images = sorted(glob.glob(os.path.join(IMAGES_DIR, "*.png")))
     random.shuffle(images)
+
+    if 0.0 < DATA_FRACTION < 1.0:
+        n_keep = int(len(images) * DATA_FRACTION)
+        images = images[:n_keep]
 
     n_train = int(len(images) * TRAIN_SPLIT)
 
@@ -47,15 +51,21 @@ def train():
         data=os.path.join(ROOT, "dataset.yaml"),
         epochs=100,
         imgsz=640,  # network input size; 640 is a good starting point
-        batch=16,  # adjust for your GPU
-        lr0=0.01,  # base LR
+        batch=64,  # adjust for your GPU
+        # lr0=0.01,  # base LR
         optimizer="sgd",  # or "adamw"
         device=0,  # GPU index or 'cpu'
-        workers=16,
+        workers=20,
         project=os.path.join(ROOT, "runs_yolo12"),
         name="data1_attempt_1",
         pretrained=True,  # use the yolo12n.pt weights
-        # you can tweak augmentation knobs here if desired:
+        visualize=True,
+        hsv_h=0.015,
+        hsv_s=0.7,
+        hsv_v=0.4,
+
+        cache="disk",
+        
         # degrees=10,
         # scale=0.5,
         # mosaic=1.0,
