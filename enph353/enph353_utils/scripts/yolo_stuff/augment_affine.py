@@ -41,6 +41,7 @@ ANGLE_RANGE_DEG = (-5.0, 5.0)
 SCALE_RANGE = (0.2, 2.2)
 
 NO_OBJECT_FRACTION = 0.2
+CROPPED_FRACTION = 0.4
 SHEAR_RANGE_DEG = (-2, 2)
 MAX_PERSP_SHRINK = 0.16
 MAX_PERSP_TILT = 0.2
@@ -445,6 +446,173 @@ def crop_to_sign(image, boxes, dst_w, dst_h):
     return crop, crop_labels
 
 
+def generate_structured_background(dst_w, dst_h):
+    """
+    Make a cheap 'Gazebo-like' background using simple geometry:
+    - sky/ground gradient
+    - optional mountains on the horizon
+    - optional road band
+    - trees as triangles, plus occasional rectangular 'buildings'
+    - light low-frequency noise
+    """
+    bg = np.zeros((dst_h, dst_w, 3), dtype=np.uint8)
+
+    # --- sky / ground gradient ---
+    horizon = int(dst_h * random.uniform(0.4, 0.7))
+
+    # sky color (BGR) and ground color
+    sky_color_top = np.array(
+        [random.randint(180, 230), random.randint(180, 230), random.randint(200, 255)],
+        dtype=np.float32,
+    )
+    sky_color_bottom = sky_color_top - np.array(
+        [random.randint(5, 40), random.randint(5, 40), 0],
+        dtype=np.float32,
+    )
+
+    ground_color_top = np.array(
+        [random.randint(40, 80), random.randint(120, 190), random.randint(40, 80)],
+        dtype=np.float32,
+    )
+    ground_color_bottom = ground_color_top - np.array(
+        [random.randint(0, 20), random.randint(20, 60), random.randint(0, 20)],
+        dtype=np.float32,
+    )
+
+    # sky gradient
+    for y in range(horizon):
+        t = y / max(1, (horizon - 1))
+        color = (1 - t) * sky_color_top + t * sky_color_bottom
+        bg[y, :] = np.clip(color, 0, 255)
+
+    # ground gradient
+    for y in range(horizon, dst_h):
+        t = (y - horizon) / max(1, (dst_h - horizon - 1))
+        color = (1 - t) * ground_color_top + t * ground_color_bottom
+        bg[y, :] = np.clip(color, 0, 255)
+
+    # --- mountains on the horizon (50% of the time) ---
+    if random.random() < 0.5:
+        num_mtn = random.randint(2, 5)
+        for _ in range(num_mtn):
+            base_w = random.randint(int(dst_w * 0.15), int(dst_w * 0.35))
+            x_center = random.randint(base_w // 2, dst_w - base_w // 2)
+            x0 = x_center - base_w // 2
+            x1 = x_center + base_w // 2
+            apex_y = random.randint(int(horizon * 0.1), int(horizon * 0.6))
+
+            pts = np.array(
+                [[x0, horizon], [x1, horizon], [x_center, apex_y]],
+                dtype=np.int32,
+            )
+            pts = pts.reshape(-1, 1, 2)
+
+            m_col = (
+                random.randint(80, 140),
+                random.randint(100, 160),
+                random.randint(80, 140),
+            )
+            cv2.fillConvexPoly(bg, pts, m_col)
+
+    # --- optional road band ---
+    if random.random() < 0.7:
+        road_height = int(dst_h * random.uniform(0.08, 0.18))
+        road_y = random.randint(
+            horizon,
+            min(dst_h - road_height - 1, horizon + int(dst_h * 0.25)),
+        )
+        road_color = (random.randint(40, 80),) * 3  # dark grey
+        cv2.rectangle(
+            bg, (0, road_y), (dst_w - 1, road_y + road_height), road_color, thickness=-1
+        )
+
+        # dashed center line
+        if random.random() < 0.7:
+            line_y = road_y + road_height // 2
+            line_th = max(2, road_height // 10)
+            line_color = (220, 220, 220)
+            x = 0
+            seg_w = int(dst_w * 0.1)
+            gap_w = int(dst_w * 0.05)
+            while x < dst_w:
+                cv2.rectangle(
+                    bg,
+                    (x, line_y - line_th // 2),
+                    (min(dst_w - 1, x + seg_w), line_y + line_th // 2),
+                    line_color,
+                    -1,
+                )
+                x += seg_w + gap_w
+
+    # --- trees (triangles) and occasional buildings ---
+    num_structs = random.randint(4, 10)
+    for _ in range(num_structs):
+        kind = "tree" if random.random() < 0.7 else "building"
+
+        if kind == "tree":
+            # base in ground region
+            base_w = random.randint(int(dst_w * 0.02), int(dst_w * 0.06))
+            height = random.randint(int(dst_h * 0.08), int(dst_h * 0.22))
+            x_center = random.randint(base_w // 2, dst_w - base_w // 2)
+            y_base = random.randint(horizon + height, dst_h - 1)
+
+            x0 = x_center - base_w // 2
+            x1 = x_center + base_w // 2
+            y0 = y_base - height
+
+            # triangle foliage
+            tri_pts = np.array(
+                [[x0, y_base], [x1, y_base], [x_center, y0]],
+                dtype=np.int32,
+            ).reshape(-1, 1, 2)
+
+            foliage_col = (
+                random.randint(20, 80),
+                random.randint(90, 170),
+                random.randint(20, 80),
+            )
+            cv2.fillConvexPoly(bg, tri_pts, foliage_col)
+
+            # small trunk
+            if random.random() < 0.9:
+                trunk_w = max(2, base_w // 4)
+                trunk_h = max(3, height // 5)
+                tx0 = x_center - trunk_w // 2
+                ty1 = y_base
+                ty0 = y_base - trunk_h
+                trunk_col = (
+                    random.randint(20, 60),
+                    random.randint(40, 80),
+                    random.randint(60, 100),
+                )
+                cv2.rectangle(
+                    bg, (tx0, ty0), (tx0 + trunk_w, ty1), trunk_col, thickness=-1
+                )
+
+        else:  # building
+            w = random.randint(int(dst_w * 0.03), int(dst_w * 0.1))
+            h = random.randint(int(dst_h * 0.1), int(dst_h * 0.35))
+            x0 = random.randint(0, dst_w - w - 1)
+            y1 = random.randint(horizon, dst_h - 1)
+            y0 = max(horizon, y1 - h)
+
+            col = (
+                random.randint(40, 120),
+                random.randint(60, 150),
+                random.randint(40, 120),
+            )
+            cv2.rectangle(bg, (x0, y0), (x0 + w, y1), col, thickness=-1)
+
+    # --- light low-frequency noise + blur ---
+    noise = np.random.normal(0, 8, bg.shape).astype(np.float32)
+    bg = np.clip(bg.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+
+    if random.random() < 0.7:
+        bg = cv2.GaussianBlur(bg, (3, 3), 0)
+
+    return bg
+
+
 # ---------------------------------------------------------------------------
 # Per-image worker
 # ---------------------------------------------------------------------------
@@ -480,7 +648,9 @@ def process_image(img_path):
         # -------------------------------------------------------
         if random.random() < NO_OBJECT_FRACTION:
             # create random noise background
-            bg = np.random.randint(0, 256, (dst_h, dst_w, 3), dtype=np.uint8)
+
+            # bg = np.random.randint(0, 256, (dst_h, dst_w, 3), dtype=np.uint8)
+            bg = generate_structured_background(1400, 1400)
 
             out_img_name = f"{base_name}_aug{k}_empty.png"
             out_lbl_name = f"{base_name}_aug{k}_empty.txt"
@@ -550,20 +720,21 @@ def process_image(img_path):
                 f.write(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
         full_count += 1
 
-        # save cropped sign
-        crop_img, crop_labels = crop_to_sign(bg, new_boxes, dst_w, dst_h)
-        if crop_img is not None and crop_labels:
-            crop_img_name = f"{base_name}_aug{k}_crop.png"
-            crop_lbl_name = f"{base_name}_aug{k}_crop.txt"
-            cv2.imwrite(
-                os.path.join(OUT_SIGN_IMAGES_DIR, crop_img_name),
-                # cv2.resize(crop_img, (RESIZE_DIM, RESIZE_DIM)),
-                crop_img,
-            )
-            with open(os.path.join(OUT_SIGN_LABELS_DIR, crop_lbl_name), "w") as f:
-                for cls_id, cx, cy, w, h in crop_labels:
-                    f.write(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
-            crop_count += 1
+        if random.random() < CROPPED_FRACTION:
+            # save cropped sign
+            crop_img, crop_labels = crop_to_sign(bg, new_boxes, dst_w, dst_h)
+            if crop_img is not None and crop_labels:
+                crop_img_name = f"{base_name}_aug{k}_crop.png"
+                crop_lbl_name = f"{base_name}_aug{k}_crop.txt"
+                cv2.imwrite(
+                    os.path.join(OUT_SIGN_IMAGES_DIR, crop_img_name),
+                    # cv2.resize(crop_img, (RESIZE_DIM, RESIZE_DIM)),
+                    crop_img,
+                )
+                with open(os.path.join(OUT_SIGN_LABELS_DIR, crop_lbl_name), "w") as f:
+                    for cls_id, cx, cy, w, h in crop_labels:
+                        f.write(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+                crop_count += 1
 
     return base_name, full_count, crop_count
 
