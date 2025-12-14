@@ -144,7 +144,7 @@ class ClueTracker:
         return len(self.first_clues)
 
     def get_frequent_clues(self):
-        print("CURRENT MAP: ", self.map)
+        # print("CURRENT MAP: ", self.map)
 
         most_frequent = {
             clue_type: max(clue_histogram.items(), key=lambda kv: kv[1])[0]

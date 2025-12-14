@@ -133,6 +133,8 @@ CLUE_IDS = {
     "BANDIT": 8,
 }
 
+FRAMES_PER_CLUE_SUBMISSION = 200
+
 
 def publish_clues(publisher, clues):
     print("PUBLISHING CLUES!")
@@ -170,6 +172,8 @@ class RobotViewApp(QtWidgets.QMainWindow):
         }
 
         self.all_clues_published = False
+
+        self.frames_since_last_clue_publish = 0
 
         self.m_detector = HotPixelAnalyzer()
         self.m_detector.init(200)
@@ -288,6 +292,14 @@ class RobotViewApp(QtWidgets.QMainWindow):
                 "DRIVER OUTPUT: "
                 + f"{self.driver_output[0]:.2f}, {self.driver_output[1]:.2f}"
             )
+
+            self.frames_since_last_clue_publish += 1
+
+            if self.frames_since_last_clue_publish >= FRAMES_PER_CLUE_SUBMISSION:
+                freq_clues = self.clue_publisher.get_frequent_clues()
+                self.frames_since_last_clue_publish = 0
+                publish_clues(self.score_publisher, freq_clues)
+
             # print("DRIVER OUTPUT: ", self.driver_output)
 
             # If autopilot is enabled, drive the bot;
@@ -323,12 +335,11 @@ class RobotViewApp(QtWidgets.QMainWindow):
                             self.stop_robot_twist()
 
                     elif state == 3:
-                        if (
-                            not self.have_we_seen_yoda
-                            and self.yoda_threshold_detector.new_value(
-                                self.driver_output[0]
-                            )
-                        ):
+                        yoda_detected = self.yoda_threshold_detector.new_value(
+                            self.driver_output[0]
+                        )
+
+                        if not self.have_we_seen_yoda and yoda_detected:
                             self.have_we_seen_yoda = True
                             print("SAW YODA FOR THE FIRST TIME!")
                             self.yoda_threshold_detector = YodaThresholdDetector(
@@ -336,9 +347,7 @@ class RobotViewApp(QtWidgets.QMainWindow):
                             )
                             self.stop_robot_twist()
 
-                        elif self.yoda_threshold_detector.new_value(
-                            self.driver_output[0]
-                        ):
+                        elif yoda_detected:
                             print("SAW YODA AGAIN! FOLLOWING")
                             self.publish_driver_twist()
 
